@@ -299,7 +299,7 @@ def find_next_page(soup: BeautifulSoup, current_url: str, base_url: str) -> str 
 def scrape_detail_page(page, url: str, debug: bool = False) -> dict:
     """
     Visite la page détail d'un bateau et en extrait :
-    prix, année, motorisation, heures moteur.
+    modele, prix, année, motorisation, heures moteur.
     """
     logger.info(f"  → {url}")
     html = get_page_html(page, url, debug=debug)
@@ -309,6 +309,16 @@ def scrape_detail_page(page, url: str, debug: bool = False) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     full_text = soup.get_text(separator=" ", strip=True)
     details: dict = {}
+
+    # ── Modèle (titre de la page détail) ─────────────────────────────────────
+    # Supprime les éléments de navigation pour ne garder que le vrai titre
+    for nav in soup.select("nav, header, .menu, .navbar, footer"):
+        nav.decompose()
+    for h in soup.find_all(["h1", "h2"]):
+        text = h.get_text(strip=True)
+        if text and len(text) > 2 and not re.search(r"menu|nav|accueil|contact|home", text, re.I):
+            details["modele"] = text
+            break
 
     # ── Prix ─────────────────────────────────────────────────────────────────
     for sel in PRICE_SELECTORS:
@@ -462,7 +472,15 @@ def scrape_category(
             seen_urls.add(boat_url)
 
             detail = scrape_detail_page(page, boat_url, debug=debug)
-            boat = {**stub, **{k: v for k, v in detail.items() if v is not None}}
+            boat = {**stub}
+            # Le détail de la page prime sur le listing, sauf pour le modèle :
+            # on garde le modèle du listing s'il existe, sinon on prend celui du détail
+            for k, v in detail.items():
+                if v is not None:
+                    if k == "modele" and boat.get("modele"):
+                        continue  # on garde le titre du listing
+                    boat[k] = v
+            boat.setdefault("modele", detail.get("modele", "N/C"))
             boat.setdefault("annee", None)
             boat.setdefault("motorisation", None)
             boat.setdefault("heures_moteur", None)
