@@ -99,7 +99,7 @@ CARD_SELECTORS = [
     ".products li.product", ".product-item",
     # Grilles génériques
     ".grid-item", ".col-item",
-    "article",
+    "article", ".col-md-6", ".col-sm-6", ".col-lg-4", ".col-md-4",
 ]
 
 PRICE_SELECTORS = [
@@ -124,8 +124,9 @@ def get_page_html(page, url: str, debug: bool = False) -> str | None:
     """Charge une URL avec Playwright et retourne le HTML."""
     for attempt in range(3):
         try:
-            page.goto(url, wait_until="networkidle", timeout=35000)
-            time.sleep(1.5 + attempt)
+            page.goto(url, wait_until="load", timeout=60000)
+            # Attend que le contenu principal soit visible
+            time.sleep(3 + attempt * 2)
             html = page.content()
             if debug:
                 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
@@ -137,8 +138,11 @@ def get_page_html(page, url: str, debug: bool = False) -> str | None:
         except PlaywrightTimeoutError:
             logger.warning(f"Timeout (tentative {attempt+1}/3) pour {url}")
             if attempt < 2:
-                page.goto(url, wait_until="domcontentloaded", timeout=35000)
-                time.sleep(3 + attempt * 2)
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(4 + attempt * 2)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Erreur chargement {url} : {e}")
             return None
@@ -192,18 +196,54 @@ def find_boat_links(soup: BeautifulSoup, base_url: str) -> list[dict]:
     seen: set[str] = set()
     boats: list[dict] = []
 
+    # Stratégie 0 : détection via le bouton "Plus d'informations" (spécifique AN66)
+    info_buttons = soup.find_all("a", string=re.compile(r"plus d.information", re.I))
+    if not info_buttons:
+        info_buttons = [
+            a for a in soup.find_all("a", href=True)
+            if re.search(r"plus d.information|détail|voir la fiche", a.get_text(), re.I)
+        ]
+    if info_buttons:
+        logger.info(f"Stratégie bouton 'Plus d'informations' : {len(info_buttons)} bateaux")
+        for btn in info_buttons:
+            url = urljoin(base_url, btn["href"])
+            if url in seen:
+                continue
+            seen.add(url)
+            # Remonte dans le DOM pour trouver le conteneur du bateau
+            container = btn.parent
+            for _ in range(6):
+                if container is None:
+                    break
+                title_el = container.find(["h1", "h2", "h3", "h4"])
+                if title_el and title_el.get_text(strip=True):
+                    break
+                container = container.parent
+            boat: dict = {"url": url}
+            if container:
+                title_el = container.find(["h1", "h2", "h3", "h4"])
+                if title_el:
+                    boat["modele"] = title_el.get_text(strip=True)
+                text = container.get_text(separator=" ")
+                prix_m = re.search(r"Prix\s*[:\s]*([0-9][0-9\s\.,]+\s*€)", text, re.I)
+                if prix_m:
+                    boat["prix_text"] = prix_m.group(1).strip()
+                    boat["prix"] = parse_price(prix_m.group(1))
+                annee_m = re.search(r"Ann[ée]e\s*[:\s]*(\d{4})", text, re.I)
+                if annee_m:
+                    boat["annee"] = int(annee_m.group(1))
+            boats.append(boat)
+        if boats:
+            return boats
+
     # Stratégie 1 : cartes structurées
     for selector in CARD_SELECTORS:
         elements = soup.select(selector)
-        # On exige au moins 2 éléments pour valider le sélecteur
         if len(elements) < 2:
             continue
-
-        # Filtre : au moins 50% des éléments doivent contenir un <a>
         with_links = [el for el in elements if el.find("a", href=True)]
-        if len(with_links) / len(elements) < 0.5:
+        if not with_links or len(with_links) / len(elements) < 0.5:
             continue
-
         logger.info(f"Sélecteur retenu : '{selector}' → {len(with_links)} éléments")
         for el in with_links:
             boat = extract_boat_from_card(el, base_url)
