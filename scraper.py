@@ -298,8 +298,9 @@ def find_next_page(soup: BeautifulSoup, current_url: str, base_url: str) -> str 
 
 def scrape_detail_page(page, url: str, debug: bool = False) -> dict:
     """
-    Visite la page détail d'un bateau et en extrait :
+    Visite la page détail d'un bateau AN66 et extrait :
     modele, prix, année, motorisation, heures moteur.
+    Structure réelle du site : table.table-striped avec <th>Label</th><td>Valeur</td>
     """
     logger.info(f"  → {url}")
     html = get_page_html(page, url, debug=debug)
@@ -307,132 +308,64 @@ def scrape_detail_page(page, url: str, debug: bool = False) -> dict:
         return {}
 
     soup = BeautifulSoup(html, "html.parser")
-    full_text = soup.get_text(separator=" ", strip=True)
     details: dict = {}
 
-    # ── Modèle (titre de la page détail) ─────────────────────────────────────
-    # Supprime les éléments de navigation pour ne garder que le vrai titre
-    for nav in soup.select("nav, header, .menu, .navbar, footer"):
-        nav.decompose()
-    for h in soup.find_all(["h1", "h2"]):
-        text = h.get_text(strip=True)
-        if text and len(text) > 2 and not re.search(r"menu|nav|accueil|contact|home", text, re.I):
+    # ── Modèle : premier <h3> qui n'est pas "Les photos..." ──────────────────
+    for h3 in soup.find_all("h3"):
+        text = h3.get_text(strip=True)
+        if text and len(text) > 2 and "photo" not in text.lower():
             details["modele"] = text
             break
 
-    # ── Prix ─────────────────────────────────────────────────────────────────
-    for sel in PRICE_SELECTORS:
-        el = soup.select_one(sel)
-        if el:
-            text = el.get_text(strip=True)
-            if "€" in text or re.search(r"\d{4,}", text):
-                details["prix_text"] = text
-                details["prix"] = parse_price(text)
-                break
+    # ── Table de specs AN66 : <table class="table table-striped"> ─────────────
+    # Labels connus : Marque, Modèle, Moteur, Année, Prix, Heures, Heure moteur
+    spec_table = soup.select_one("table.table-striped, table.table")
+    if spec_table:
+        for row in spec_table.find_all("tr"):
+            th = row.find("th")
+            td = row.find("td")
+            if not th:
+                continue
+            label = th.get_text(strip=True).lower().strip()
+            # Valeur : dans <td> si présent, sinon texte du <tr> sans le label
+            if td:
+                value = td.get_text(strip=True)
+            else:
+                value = row.get_text(strip=True).replace(th.get_text(strip=True), "", 1).strip()
+
+            if not value:
+                continue
+
+            if label == "prix" and not details.get("prix"):
+                details["prix_text"] = value
+                details["prix"] = parse_price(value)
+            elif label == "moteur" and not details.get("motorisation"):
+                details["motorisation"] = value
+            elif label in ("année", "annee") and not details.get("annee"):
+                m = re.search(r"\d{4}", value)
+                if m and 1980 <= int(m.group()) <= 2030:
+                    details["annee"] = int(m.group())
+            elif re.search(r"heure", label) and not details.get("heures_moteur"):
+                m = re.search(r"\d+", value)
+                if m:
+                    details["heures_moteur"] = m.group()
+            elif label == "modèle" and not details.get("modele"):
+                details["modele"] = value
+
+    # ── Fallback prix si table vide ───────────────────────────────────────────
     if not details.get("prix"):
-        m = re.search(r"(\d[\d\s]{2,})\s*€", full_text)
+        full_text = soup.get_text(separator=" ", strip=True)
+        m = re.search(r"(\d[\d\s]{2,}[,.]?\d{0,2})\s*€", full_text)
         if m:
             details["prix_text"] = m.group().strip()
             details["prix"] = parse_price(m.group())
-
-    # ── Année ────────────────────────────────────────────────────────────────
-    for pat in [
-        r"(?i)ann[ée]e\s*[:\s]*(\d{4})",
-        r"(?i)mill[ée]sime\s*[:\s]*(\d{4})",
-        r"\b(20[0-2]\d|199\d|198\d)\b",
-    ]:
-        m = re.search(pat, full_text)
-        if m:
-            year = int(m.group(1))
-            if 1980 <= year <= 2030:
-                details["annee"] = year
-                break
-
-    # ── Motorisation ─────────────────────────────────────────────────────────
-    # Priorité : marque + puissance
-    m = re.search(
-        rf"(?i)({MOTOR_BRANDS})\s*[\w\d\s\-]*?\s*(\d+\s*(?:CV|ch|HP|kW))",
-        full_text,
-    )
-    if m:
-        details["motorisation"] = m.group().strip()
-    else:
-        m = re.search(r"(?i)motoris[ae]tion\s*[:\s]*([^\n\r<]{5,80})", full_text)
-        if m:
-            details["motorisation"] = m.group(1).strip()
-        else:
-            m = re.search(r"(?i)moteur\s*[:\s]*([^\n\r<]{5,60})", full_text)
-            if m:
-                details["motorisation"] = m.group(1).strip()
-            else:
-                m = re.search(r"(\d+\s*(?:CV|ch|HP|kW))", full_text)
-                if m:
-                    details["motorisation"] = m.group().strip()
-
-    # ── Heures moteur ────────────────────────────────────────────────────────
-    for pat in [
-        r"(?i)heures?\s*(?:moteur|machine)?\s*[:\s]*(\d[\d\s]*)",
-        r"(?i)h\s*/\s*moteur\s*[:\s]*(\d+)",
-        r"(?i)(\d+)\s*h(?:eures?|rs?)\b",
-    ]:
-        m = re.search(pat, full_text)
-        if m:
-            val = re.sub(r"\s", "", m.group(1))
-            if val.isdigit():
-                details["heures_moteur"] = val
-                break
-
-    # ── Extraction depuis tableaux / listes de specs ──────────────────────
-    _extract_from_specs(soup, details)
 
     return details
 
 
 def _extract_from_specs(soup: BeautifulSoup, details: dict) -> None:
-    """Complète `details` depuis les tableaux et listes de spécifications."""
-    containers = soup.find_all(["table", "dl", "ul", "div"])
-    for container in containers:
-        pairs: list[tuple[str, str]] = []
-
-        if container.name == "dl":
-            pairs = [
-                (dt.get_text(strip=True), dd.get_text(strip=True))
-                for dt, dd in zip(
-                    container.find_all("dt"), container.find_all("dd")
-                )
-            ]
-        elif container.name == "table":
-            for row in container.find_all("tr"):
-                cells = row.find_all(["td", "th"])
-                if len(cells) >= 2:
-                    pairs.append(
-                        (cells[0].get_text(strip=True), cells[1].get_text(strip=True))
-                    )
-        else:
-            # div / ul : cherche des paires label:valeur
-            items = container.find_all(["li", "p", "span"])
-            for item in items:
-                text = item.get_text(separator=":", strip=True)
-                if ":" in text:
-                    parts = text.split(":", 1)
-                    pairs.append((parts[0].strip(), parts[1].strip()))
-
-        for key, val in pairs:
-            kl = key.lower()
-            if re.search(r"ann[ée]", kl) and not details.get("annee"):
-                m = re.search(r"\d{4}", val)
-                if m and 1980 <= int(m.group()) <= 2030:
-                    details["annee"] = int(m.group())
-            elif "motori" in kl and not details.get("motorisation"):
-                if val:
-                    details["motorisation"] = val
-            elif "heure" in kl and not details.get("heures_moteur"):
-                m = re.search(r"\d+", val)
-                if m:
-                    details["heures_moteur"] = m.group()
-            elif "prix" in kl and not details.get("prix"):
-                details["prix_text"] = val
-                details["prix"] = parse_price(val)
+    """Non utilisé — gardé pour compatibilité."""
+    pass
 
 
 def scrape_category(
