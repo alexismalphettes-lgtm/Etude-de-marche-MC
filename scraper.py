@@ -69,11 +69,28 @@ def save_history(history: dict) -> None:
 
 
 def parse_price(text: str) -> float | None:
-    """Extrait un prix numérique depuis un texte (ex: '45 000 €' → 45000.0)."""
+    """
+    Parse un prix au format français : '495 000,00 €' → 495000.0
+    Espace = séparateur de milliers, virgule = séparateur décimal.
+    """
     if not text:
         return None
-    digits = re.sub(r"[^\d]", "", text)
-    return float(digits) if digits else None
+    # Supprime € et espaces
+    clean = re.sub(r"[€\s]", "", text).strip()
+    if not clean:
+        return None
+    if "," in clean:
+        parts = clean.split(",")
+        integer_part = re.sub(r"[^\d]", "", parts[0])
+        # La virgule est décimale seulement si 1-2 chiffres après
+        if len(parts) > 1 and len(re.sub(r"[^\d]", "", parts[1])) <= 2:
+            decimal_part = re.sub(r"[^\d]", "", parts[1])
+            full = integer_part + "." + decimal_part
+        else:
+            full = integer_part
+    else:
+        full = re.sub(r"[^\d]", "", clean)
+    return float(full) if full else None
 
 
 def format_price(price: float | None) -> str:
@@ -488,10 +505,13 @@ def update_history(
             logger.info(f"  + Nouveau : {boat.get('modele', url)}")
         else:
             existing = cat[url]
-            # Met à jour les champs vides
-            for field in ("annee", "motorisation", "heures_moteur", "modele"):
-                if not existing.get(field) and boat.get(field):
+            # Toujours mettre à jour motorisation/heures/année avec la dernière valeur scrapée
+            for field in ("annee", "motorisation", "heures_moteur"):
+                if boat.get(field) is not None:
                     existing[field] = boat[field]
+            # Pour le modèle on garde l'existant s'il est déjà renseigné
+            if not existing.get("modele") and boat.get("modele"):
+                existing["modele"] = boat["modele"]
 
             # Détecte un changement de prix
             hist = existing["historique_prix"]
