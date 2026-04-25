@@ -327,15 +327,19 @@ def scrape_detail_page(page, url: str, debug: bool = False) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     details: dict = {}
 
-    # ── Modèle : premier <h3> qui n'est pas "Les photos..." ──────────────────
+    # Mots-clés à exclure des titres de section (faux modèles)
+    FAUX_TITRES = {"photo", "vidéo", "video", "contact", "formulaire",
+                   "nos occasions", "occasions", "bateaux neufs", "services"}
+
+    # ── Modèle : premier <h3> valide ─────────────────────────────────────────
     for h3 in soup.find_all("h3"):
-        text = h3.get_text(strip=True)
-        if text and len(text) > 2 and "photo" not in text.lower():
+        text = h3.get_text(strip=True).rstrip(":").strip()
+        if (text and len(text) > 2
+                and not any(kw in text.lower() for kw in FAUX_TITRES)):
             details["modele"] = text
             break
 
     # ── Table de specs AN66 : <table class="table table-striped"> ─────────────
-    # Labels connus : Marque, Modèle, Moteur, Année, Prix, Heures, Heure moteur
     spec_table = soup.select_one("table.table-striped, table.table")
     if spec_table:
         for row in spec_table.find_all("tr"):
@@ -344,28 +348,38 @@ def scrape_detail_page(page, url: str, debug: bool = False) -> dict:
             if not th:
                 continue
             label = th.get_text(strip=True).lower().strip()
-            # Valeur : dans <td> si présent, sinon texte du <tr> sans le label
-            if td:
-                value = td.get_text(strip=True)
-            else:
-                value = row.get_text(strip=True).replace(th.get_text(strip=True), "", 1).strip()
-
+            value = (td.get_text(strip=True) if td
+                     else row.get_text(strip=True).replace(th.get_text(strip=True), "", 1).strip())
             if not value:
                 continue
 
             if label == "prix" and not details.get("prix"):
                 details["prix_text"] = value
                 details["prix"] = parse_price(value)
+
             elif label == "moteur" and not details.get("motorisation"):
-                details["motorisation"] = value
+                # Extrait les heures si elles sont dans le texte moteur (ex: "- 529hrs")
+                hours_in_motor = re.search(
+                    r"[-–]?\s*(\d+)\s*(?:hrs?|heures?)\b", value, re.I
+                )
+                if hours_in_motor and not details.get("heures_moteur"):
+                    details["heures_moteur"] = hours_in_motor.group(1)
+                # Nettoie la motorisation : retire les heures et tirets traînants
+                clean_motor = re.sub(
+                    r"\s*[-–]?\s*\d+\s*(?:hrs?|heures?)\b.*", "", value, flags=re.I
+                ).strip(" -–").strip()
+                details["motorisation"] = clean_motor or value
+
             elif label in ("année", "annee") and not details.get("annee"):
                 m = re.search(r"\d{4}", value)
                 if m and 1980 <= int(m.group()) <= 2030:
                     details["annee"] = int(m.group())
+
             elif re.search(r"heure", label) and not details.get("heures_moteur"):
                 m = re.search(r"\d+", value)
                 if m:
                     details["heures_moteur"] = m.group()
+
             elif label == "modèle" and not details.get("modele"):
                 details["modele"] = value
 
@@ -456,11 +470,19 @@ def scrape_category(
 
 
 def compute_price_drops(historique: list[dict]) -> list[dict]:
-    """Calcule les baisses de prix depuis l'historique."""
+    """
+    Calcule les baisses de prix depuis l'historique.
+    Ignore les comparaisons du même jour (évite les faux positifs dus à des corrections).
+    """
     drops = []
     for i in range(1, len(historique)):
-        prev = historique[i - 1]["prix"]
-        curr = historique[i]["prix"]
+        prev_entry = historique[i - 1]
+        curr_entry = historique[i]
+        # On n'accepte une baisse que si elle est entre deux dates différentes
+        if prev_entry["date"] == curr_entry["date"]:
+            continue
+        prev = prev_entry["prix"]
+        curr = curr_entry["prix"]
         if prev and curr and curr < prev - 0.01:
             drops.append(
                 {
@@ -468,7 +490,7 @@ def compute_price_drops(historique: list[dict]) -> list[dict]:
                     "pourcentage": ((prev - curr) / prev) * 100,
                     "prix_avant": prev,
                     "prix_apres": curr,
-                    "date": historique[i]["date"],
+                    "date": curr_entry["date"],
                 }
             )
     return drops
@@ -676,7 +698,7 @@ def _create_sheet(
         ws.row_dimensions[row].height = 20
 
     # ── Gel des en-têtes ─────────────────────────────────────────────────────
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "A2"  # Gèle uniquement la ligne d'en-têtes
 
     # ── Filtre automatique ────────────────────────────────────────────────────
     ws.auto_filter.ref = f"A1:{get_column_letter(ncols)}{1 + len(boats)}"
