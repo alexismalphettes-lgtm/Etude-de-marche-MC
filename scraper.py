@@ -597,37 +597,25 @@ def _create_sheet(
     border = _thin_border()
     ncols = len(COLUMNS)
 
-    # ── Ligne titre ──────────────────────────────────────────────────────────
-    ws.merge_cells(f"A1:{get_column_letter(ncols)}1")
-    title_cell = ws["A1"]
-    title_cell.value = (
-        f"{'Bateaux Neufs' if is_neuf else 'Occasions'} · "
-        f"Alliance Nautique 66  |  Veille Marine Center  |  {TODAY}"
-    )
-    title_cell.font = Font(bold=True, size=13, color=C_WHITE)
-    title_cell.fill = _header_fill(h_color)
-    title_cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 30
-
-    # ── Ligne en-têtes colonnes ───────────────────────────────────────────────
+    # ── Ligne en-têtes colonnes (row 1) ──────────────────────────────────────
     for ci, (col_name, col_width) in enumerate(COLUMNS, 1):
-        cell = ws.cell(row=2, column=ci, value=col_name)
+        cell = ws.cell(row=1, column=ci, value=col_name)
         cell.font = Font(bold=True, color=C_WHITE, size=10)
         cell.fill = _header_fill(h_color)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = border
         ws.column_dimensions[get_column_letter(ci)].width = col_width
-    ws.row_dimensions[2].height = 36
+    ws.row_dimensions[1].height = 36
 
     if not boats:
-        ws.cell(row=3, column=1, value="Aucun bateau trouvé.").font = Font(
+        ws.cell(row=2, column=1, value="Aucun bateau trouvé.").font = Font(
             italic=True, color="888888"
         )
         return
 
-    # ── Lignes données ────────────────────────────────────────────────────────
+    # ── Lignes données (démarrent à row 2) ───────────────────────────────────
     for ri, boat in enumerate(boats):
-        row = 3 + ri
+        row = 2 + ri
         is_odd = ri % 2 == 0
         baisses = boat.get("baisses_de_prix", [])
         has_drop = bool(baisses)
@@ -688,13 +676,13 @@ def _create_sheet(
         ws.row_dimensions[row].height = 20
 
     # ── Gel des en-têtes ─────────────────────────────────────────────────────
-    ws.freeze_panes = "A3"
+    ws.freeze_panes = "A2"
 
     # ── Filtre automatique ────────────────────────────────────────────────────
-    ws.auto_filter.ref = f"A2:{get_column_letter(ncols)}{2 + len(boats)}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(ncols)}{1 + len(boats)}"
 
     # ── Légende ───────────────────────────────────────────────────────────────
-    leg_row = 3 + len(boats) + 2
+    leg_row = 2 + len(boats) + 2
     ws.cell(row=leg_row, column=1, value="Légende :").font = Font(bold=True)
 
     for offset, (color, label) in enumerate(
